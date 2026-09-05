@@ -25,6 +25,55 @@ jobs:
       id-token: write
 
     steps:
+      - name: Verify actor authorization
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const actor = context.actor;
+            const repo = context.repo;
+            
+            // Get the actor's permission level in the repository
+            let permission;
+            try {
+              const { data: permissionData } = await github.rest.repos.getCollaboratorPermissionLevel({
+                owner: repo.owner,
+                repo: repo.repo,
+                username: actor
+              });
+              permission = permissionData.permission;
+            } catch (error) {
+              core.setFailed(`Failed to retrieve permissions for user ${actor}: ${error.message}`);
+              return;
+            }
+            
+            // Only allow users with write, maintain, or admin permissions
+            const allowedPermissions = ['write', 'maintain', 'admin'];
+            if (!allowedPermissions.includes(permission)) {
+              core.setFailed(`User ${actor} does not have sufficient permissions to invoke this workflow. Required: write, maintain, or admin. Current: ${permission}`);
+              return;
+            }
+            
+            // Additionally check author_association for issue_comment and issues events
+            let authorAssociation = null;
+            if (context.eventName === 'issue_comment') {
+              authorAssociation = context.payload.comment?.author_association;
+            } else if (context.eventName === 'issues') {
+              authorAssociation = context.payload.issue?.author_association;
+            } else if (context.eventName === 'pull_request_review_comment') {
+              authorAssociation = context.payload.comment?.author_association;
+            } else if (context.eventName === 'pull_request_review') {
+              authorAssociation = context.payload.review?.author_association;
+            }
+            
+            // Require COLLABORATOR, MEMBER, or OWNER association
+            const allowedAssociations = ['COLLABORATOR', 'MEMBER', 'OWNER'];
+            if (authorAssociation && !allowedAssociations.includes(authorAssociation)) {
+              core.setFailed(`User ${actor} does not have sufficient repository association to invoke this workflow. Required: COLLABORATOR, MEMBER, or OWNER. Current: ${authorAssociation}`);
+              return;
+            }
+            
+            core.info(`Authorization successful: User ${actor} has permission level '${permission}' and association '${authorAssociation || 'N/A'}'`);
+
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
