@@ -28,7 +28,10 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
+          # For PR review events, explicitly checkout base branch to avoid executing untrusted code
+          ref: ${{ github.event_name == 'pull_request_review' && github.event.pull_request.base.ref || github.event_name == 'pull_request_review_comment' && github.event.pull_request.base.ref || github.ref }}
           fetch-depth: 0 # Full depth for better git operations
+          persist-credentials: false # Prevent token persistence in .git/config
 
       # Setup Node.js for JS/TS projects
       - name: Setup Node.js
