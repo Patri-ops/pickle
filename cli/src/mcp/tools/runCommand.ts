@@ -5,6 +5,12 @@ import type { McpTool } from "../types/tools.js";
 
 export class RunCommandTool implements McpTool {
   name = "run_command";
+  private commandApprovalCallback?: (
+    command: string,
+    args: string[],
+    cwd?: string
+  ) => Promise<boolean>;
+
   description =
     "Execute system commands with full control over arguments, working directory, and timeout. Returns structured output with exit code, stdout, stderr, and command info. Use this for running shell commands, build scripts, tests, or any system operations.";
 
@@ -34,12 +40,37 @@ export class RunCommandTool implements McpTool {
       ),
   });
 
+  setCommandApprovalCallback(
+    callback: (
+      command: string,
+      args: string[],
+      cwd?: string
+    ) => Promise<boolean>
+  ) {
+    this.commandApprovalCallback = callback;
+  }
+
   async execute({
     command,
     args = [],
     cwd,
     timeout = 30000,
   }: z.infer<typeof this.inputSchema>) {
+    // Request approval if callback is set
+    if (this.commandApprovalCallback) {
+      const approved = await this.commandApprovalCallback(command, args, cwd);
+      if (!approved) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `Command execution was rejected by user.`,
+            },
+          ],
+        };
+      }
+    }
+
     const cmdRes = await executeCommand(command, args, cwd, timeout, true);
 
     if (cmdRes.isErr()) {
