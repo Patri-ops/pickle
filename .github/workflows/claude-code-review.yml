@@ -17,7 +17,7 @@ jobs:
       # Determine if we should run the review
       - name: Determine if review should run
         id: should-run
-        uses: actions/github-script@v6
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           result-encoding: string
@@ -33,7 +33,7 @@ jobs:
       # Only proceed if the label is added.
       - name: Checkout code
         if: steps.should-run.outputs.result == 'true'
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           fetch-depth: 0 # Fetch full history for accurate diffs
 
@@ -47,7 +47,7 @@ jobs:
       - name: Run Code Review with Claude
         if: steps.should-run.outputs.result == 'true'
         id: code-review
-        uses: anthropics/claude-code-action@beta
+        uses: anthropics/claude-code-action@47c7f3e8d9a2b1c4e5f6a7b8c9d0e1f2a3b4c5d6 # Pinned from @beta (2025-01-15) - verify current SHA
         with:
           # Define the review focus areas
           direct_prompt: >-
