@@ -6,7 +6,6 @@ on:
 
 permissions:
   contents: read
-  pull-requests: write
 
 jobs:
   check-changes:
@@ -17,6 +16,7 @@ jobs:
       - uses: actions/checkout@v3
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Check if file was modified
         id: check_modified
@@ -29,13 +29,83 @@ jobs:
             echo "file_changed=false" >> $GITHUB_OUTPUT
           fi
 
-  validate:
+  extract-registry:
     needs: check-changes
     runs-on: ubuntu-latest
     if: |
       needs.check-changes.outputs.file_changed == 'true'
+    outputs:
+      registry_data: ${{ steps.extract.outputs.registry_data }}
     steps:
       - uses: actions/checkout@v3
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: 20.13.0
+
+      - name: Extract registry data from PR
+        id: extract
+        working-directory: front
+        run: |
+          # Create a minimal extraction script that only reads the registry
+          cat > extract_registry.mjs << 'EOF'
+          import { readFileSync } from 'fs';
+          
+          // Read the registry file as text and extract app definitions using regex
+          const registryContent = readFileSync('./lib/registry.ts', 'utf-8');
+          
+          // Extract the BaseDustProdActionRegistry object
+          const registryMatch = registryContent.match(/export const BaseDustProdActionRegistry = ({[\s\S]*?^};)/m);
+          if (!registryMatch) {
+            console.error('Could not find BaseDustProdActionRegistry');
+            process.exit(1);
+          }
+          
+          // Parse app entries using regex to avoid executing untrusted code
+          const appPattern = /"([^"]+)":\s*{\s*app:\s*{\s*appId:\s*"([^"]+)",\s*appHash:\s*"([^"]+)"/g;
+          const apps = [];
+          let match;
+          
+          while ((match = appPattern.exec(registryMatch[1])) !== null) {
+            apps.push({
+              name: match[1],
+              appId: match[2],
+              appHash: match[3]
+            });
+          }
+          
+          if (apps.length === 0) {
+            console.error('No apps found in registry');
+            process.exit(1);
+          }
+          
+          // Output as JSON
+          console.log(JSON.stringify(apps));
+          EOF
+          
+          # Run extraction without installing dependencies
+          REGISTRY_DATA=$(node extract_registry.mjs)
+          echo "Extracted ${REGISTRY_DATA}" >&2
+          
+          # Escape for GitHub Actions output
+          echo "registry_data<<EOF" >> $GITHUB_OUTPUT
+          echo "$REGISTRY_DATA" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+  validate:
+    needs: extract-registry
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          ref: ${{ github.base_ref }}
+          persist-credentials: false
 
       - name: Setup validation environment
         uses: actions/setup-node@v3
@@ -48,11 +118,73 @@ jobs:
         working-directory: sdks/js
         run: npm install && npm run build
 
-      - name: Run validation
+      - name: Run validation with trusted code
         id: validate
         working-directory: front
+        env:
+          REGISTRY_DATA: ${{ needs.extract-registry.outputs.registry_data }}
+          DUST_APPS_US_API_KEY: ${{ secrets.DUST_APPS_US_API_KEY }}
+          DUST_APPS_EU_API_KEY: ${{ secrets.DUST_APPS_EU_API_KEY }}
         run: |
           set -eo pipefail
           npm install
-          npx tsx ./admin/check_registry_apps.ts --execute --url https://dust.tt --wId 78bda07b39 --spaceId vlt_rICtlrSEpWqX --apiKey ${{ secrets.DUST_APPS_US_API_KEY }}
-          npx tsx ./admin/check_registry_apps.ts --execute --url https://eu.dust.tt --wId W1YzXC9nhN --spaceId vlt_p5kel5XkwVqEnpKcdXzC --apiKey ${{ secrets.DUST_APPS_EU_API_KEY }}
+          
+          # Create a validation script that uses the extracted registry data
+          cat > validate_apps.mjs << 'EOF'
+          import { DustAPI } from '@dust-tt/client';
+          
+          const registryApps = JSON.parse(process.env.REGISTRY_DATA);
+          
+          async function validateWorkspace(url, wId, spaceId, apiKey) {
+            const api = new DustAPI(
+              { url },
+              { apiKey, workspaceId: wId }
+            );
+            
+            const apps = registryApps.map(app => ({
+              appId: app.appId,
+              appHash: app.appHash
+            }));
+            
+            const response = await fetch(`${url}/api/v1/w/${wId}/spaces/${spaceId}/apps/check`, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${apiKey}`
+              },
+              body: JSON.stringify({ apps })
+            });
+            
+            if (!response.ok) {
+              throw new Error(`API request failed: ${response.status} ${response.statusText}`);
+            }
+            
+            const result = await response.json();
+            const notDeployed = result.filter(a => !a.deployed);
+            
+            if (notDeployed.length > 0) {
+              throw new Error(
+                'Missing apps: ' + notDeployed.map(a => a.appId).join(', ') + '\n' +
+                'Check runbook: https://www.notion.so/dust-tt/Runbook-Update-Assistant-dust-apps-18c28599d94180d78dabe92f445157a8'
+              );
+            }
+            
+            console.log(`All apps are deployed in ${url}`);
+          }
+          
+          await validateWorkspace(
+            'https://dust.tt',
+            '78bda07b39',
+            'vlt_rICtlrSEpWqX',
+            process.env.DUST_APPS_US_API_KEY
+          );
+          
+          await validateWorkspace(
+            'https://eu.dust.tt',
+            'W1YzXC9nhN',
+            'vlt_p5kel5XkwVqEnpKcdXzC',
+            process.env.DUST_APPS_EU_API_KEY
+          );
+          EOF
+          
+          node validate_apps.mjs
