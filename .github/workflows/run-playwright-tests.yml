@@ -18,16 +18,32 @@ jobs:
         env:
           REPO_OWNER: ${{ github.repository_owner }}
           REPO_NAME: ${{ github.event.client_payload.repository_name }}
+          COMMIT_SHA: ${{ github.event.client_payload.sha }}
         run: |
+          # Validate repository name format (alphanumeric, hyphens, underscores, dots)
+          if ! echo "$REPO_NAME" | grep -qE '^[a-zA-Z0-9._-]+$'; then
+            echo "Error: Invalid repository name format"
+            exit 1
+          fi
+          
+          # Validate commit SHA format (40-character hexadecimal)
+          if ! echo "$COMMIT_SHA" | grep -qE '^[0-9a-fA-F]{40}$'; then
+            echo "Error: Invalid commit SHA format (must be 40-character hexadecimal)"
+            exit 1
+          fi
+          
+          # Construct JSON payload safely using jq
+          payload=$(jq -n \
+            --arg targetUrl "https://dust.tt/" \
+            --arg ghOwner "$REPO_OWNER" \
+            --arg ghRepo "$REPO_NAME" \
+            --arg ghCommitSha "$COMMIT_SHA" \
+            '{targetUrl: $targetUrl, ghOwner: $ghOwner, ghRepo: $ghRepo, ghCommitSha: $ghCommitSha}')
+          
           response=$(curl -s -w "\n%{http_code}" -X POST "https://webhook.ranger.net/api/v1/tests/run" \
           -H "Content-Type: application/json" \
           -H "Authorization: Bearer ${{ secrets.RANGER_API_TOKEN }}" \
-          -d '{
-            "targetUrl": "https://dust.tt/",
-            "ghOwner": "'$REPO_OWNER'",
-            "ghRepo": "'$REPO_NAME'",
-            "ghCommitSha": "${{ github.event.client_payload.sha }}"
-          }')
+          -d "$payload")
           echo "$response"
           http_code=$(echo "$response" | tail -n1)
           body=$(echo "$response" | sed '$d')
