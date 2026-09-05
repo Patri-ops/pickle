@@ -16,6 +16,11 @@ export const useFileSystemServer = async (
     originalContent: string,
     updatedContent: string,
     filePath: string
+  ) => Promise<boolean>,
+  commandApprovalCallback?: (
+    command: string,
+    args: string[],
+    cwd?: string
   ) => Promise<boolean>
 ): Promise<Result<void, Error>> => {
   // Check if using API key authentication - MCP servers require OAuth
@@ -41,6 +46,10 @@ export const useFileSystemServer = async (
 
   if (diffApprovalCallback) {
     editFileTool.setDiffApprovalCallback(diffApprovalCallback);
+  }
+
+  if (commandApprovalCallback) {
+    runCommandTool.setCommandApprovalCallback(commandApprovalCallback);
   }
 
   // File operations

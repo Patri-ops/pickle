@@ -23,6 +23,7 @@ import { useMe } from "../../utils/hooks/use_me.js";
 import { clearTerminal } from "../../utils/terminal.js";
 import { toolsCache } from "../../utils/toolsCache.js";
 import AgentSelector from "../components/AgentSelector.js";
+import { CommandApprovalSelector } from "../components/CommandApprovalSelector.js";
 import type { ConversationItem } from "../components/Conversation.js";
 import Conversation from "../components/Conversation.js";
 import { DiffApprovalSelector } from "../components/DiffApprovalSelector.js";
@@ -97,6 +98,14 @@ const CliChat: FC<CliChatProps> = ({
     filePath: string;
   } | null>(null);
   const [diffApprovalResolver, setDiffApprovalResolver] = useState<
+    ((approved: boolean) => void) | null
+  >(null);
+  const [pendingCommandApproval, setPendingCommandApproval] = useState<{
+    command: string;
+    args: string[];
+    cwd?: string;
+  } | null>(null);
+  const [commandApprovalResolver, setCommandApprovalResolver] = useState<
     ((approved: boolean) => void) | null
   >(null);
   const [pendingFiles, setPendingFiles] = useState<FileInfo[]>([]);
@@ -222,6 +231,33 @@ const CliChat: FC<CliChatProps> = ({
       return new Promise<boolean>((resolve) => {
         setPendingDiffApproval({ originalContent, updatedContent, filePath });
         setDiffApprovalResolver(() => (approved: boolean) => {
+          resolve(approved);
+        });
+      });
+    },
+    []
+  );
+
+  const handleCommandApproval = useCallback(
+    async (approved: boolean) => {
+      if (commandApprovalResolver && pendingCommandApproval) {
+        commandApprovalResolver(approved);
+        setPendingCommandApproval(null);
+        setCommandApprovalResolver(null);
+      }
+    },
+    [commandApprovalResolver, pendingCommandApproval]
+  );
+
+  const requestCommandApproval = useCallback(
+    async (
+      command: string,
+      args: string[],
+      cwd?: string
+    ): Promise<boolean> => {
+      return new Promise<boolean>((resolve) => {
+        setPendingCommandApproval({ command, args, cwd });
+        setCommandApprovalResolver(() => (approved: boolean) => {
           resolve(approved);
         });
       });
@@ -811,7 +847,7 @@ const CliChat: FC<CliChatProps> = ({
   // Handle keyboard events.
   useInput((input, key) => {
     // Skip input handling when there's a pending approval
-    if (pendingApproval || pendingDiffApproval) {
+    if (pendingApproval || pendingDiffApproval || pendingCommandApproval) {
       return;
     }
 
@@ -1274,7 +1310,8 @@ const CliChat: FC<CliChatProps> = ({
               (serverId) => {
                 setFileSystemServerId(serverId);
               },
-              requestDiffApproval
+              requestDiffApproval,
+              requestCommandApproval
             );
             if (useFsServerRes.isErr()) {
               setError(useFsServerRes.error.message);
@@ -1316,6 +1353,21 @@ const CliChat: FC<CliChatProps> = ({
         onApproval={async (approved) => {
           await clearTerminal();
           await handleDiffApproval(approved);
+        }}
+      />
+    );
+  }
+
+  // Show command approval prompt if pending
+  if (pendingCommandApproval) {
+    return (
+      <CommandApprovalSelector
+        command={pendingCommandApproval.command}
+        args={pendingCommandApproval.args}
+        cwd={pendingCommandApproval.cwd}
+        onApproval={async (approved) => {
+          await clearTerminal();
+          await handleCommandApproval(approved);
         }}
       />
     );
