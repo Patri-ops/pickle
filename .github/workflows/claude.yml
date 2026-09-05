@@ -11,45 +11,63 @@ on:
     types: [submitted]
 
 jobs:
-  claude:
-    if: |
-      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
-      (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude')) ||
-      (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude')) ||
-      (github.event_name == 'issues' && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude')))
+  # First job: Check if the triggering actor has write permission
+  check-permissions:
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: read
+    outputs:
+      has-permission: ${{ steps.check.outputs.has-permission }}
+    steps:
+      - name: Check actor permissions
+        id: check
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const actorLogin = context.actor;
+            const repo = context.repo;
+            
+            try {
+              const { data: permission } = await github.rest.repos.getCollaboratorPermissionLevel({
+                owner: repo.owner,
+                repo: repo.repo,
+                username: actorLogin
+              });
+              
+              // Only allow users with write, maintain, or admin permissions
+              const hasPermission = ['write', 'maintain', 'admin'].includes(permission.permission);
+              console.log(`Actor ${actorLogin} has permission level: ${permission.permission}`);
+              console.log(`Has required permission: ${hasPermission}`);
+              
+              core.setOutput('has-permission', hasPermission.toString());
+            } catch (error) {
+              console.log(`Error checking permissions for ${actorLogin}: ${error.message}`);
+              core.setOutput('has-permission', 'false');
+            }
+
+  claude:
+    needs: check-permissions
+    if: |
+      needs.check-permissions.outputs.has-permission == 'true' &&
+      (
+        (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
+        (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude')) ||
+        (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude')) ||
+        (github.event_name == 'issues' && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude')))
+      )
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
       pull-requests: write
       issues: write
-      id-token: write
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0 # Full depth for better git operations
-
-      # Setup Node.js for JS/TS projects
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20.13.0
-
-      # Setup Rust for core project
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt
-
-      # Pre-build SDK only as it's a dependency for other projects
-      - name: Build SDK
-        run: |
-          # Install global tools
-          npm install -g tsx
-
-          # Pre-build SDK as it's a dependency for front and connectors
-          cd sdks/js && npm install && npm run build && cd ../..
+          persist-credentials: false # Prevent credential exposure to subsequent steps
 
       - name: Run Claude Code
         id: claude
@@ -66,95 +84,75 @@ jobs:
           # Optional: Trigger when specific user is assigned to an issue
           # assignee_trigger: "claude-bot"
 
-          # Allow Claude to use all available tools
+          # Allow Claude to use read-only and safe tools only
+          # Removed: Agent, Bash, Edit, MultiEdit, NotebookEdit, TodoWrite, Write
+          # These tools could be exploited via prompt injection to modify repository content
           allowed_tools: |
-            Agent,
-            Bash,
-            Edit,
             Glob,
             Grep,
             LS,
-            MultiEdit,
-            NotebookEdit,
             NotebookRead,
             Read,
             TodoRead,
-            TodoWrite,
             WebFetch,
-            WebSearch,
-            Write
+            WebSearch
 
-          # Custom instructions based on CLAUDE.md
+          # Custom instructions - Read-only advisory mode
           custom_instructions: |
+            ### IMPORTANT: Read-Only Advisory Mode
+            
+            You are operating in READ-ONLY mode. You CANNOT and MUST NOT:
+            - Modify, edit, or write any files
+            - Execute bash commands or scripts
+            - Commit or push changes
+            - Create or modify pull requests beyond commenting
+            
+            Your role is to provide advice, analysis, and recommendations only.
+            
             ### 1. General Principles
-
-            - Never make changes to the codebase that the user did not ask for.
-            - Unless explicitly requested to modify code, output must remain strictly conversational.
-            - Always make the minimal changes required—never more.
-            - Follow all **CODING_RULES.md** files in each project directory (core, front). Review them before altering code.
-            - Avoid "defensive" patterns (default values, removing tests, non-null assertions).
-            - Add comments **only** for complex, non-obvious logic; wrap at ~100 characters.
-            - Write code that fails fast and explicitly; assume valid inputs.
-
-            ### 2. Code Modification & Compilation
-
-            - **TypeScript**: run `npx tsc --noEmit` in the project directory before committing changes.
-            - **Rust**: run `cargo check` in the project directory before committing changes.
-            - Never attempt to run servers, applications, or execute code—compile only.
-
-            ### 3. Error Handling
-
-            - Let exceptions propagate; do **not** catch your own thrown errors.
-            - Default for new functions: allow exceptions to bubble up.
-            - Use `Result<T, E>` **only** when downstream handling is required.
-            - Use `try/catch` solely to convert external library errors into the project's `Result` type.
-              - Limit the `try/catch` scope to the specific statement that may throw.
-            - Only use catching / returning `Result` in functions that already return `Result`.
-            - Replace `err as Error` with `normalizeError()`.
-
-            ### 4. Testing & Execution
-
-            - Never add tests unless asked.
-            - Never run tests unless asked.
-
-            ### 5. Naming & Refactoring
-
-            - When renaming a function, **do not** keep the old name for backward compatibility.
-
-            ### 6. Planning Requests
-
-            - If asked to create a plan, propose actions only—**no code changes** until approval.
-
-            ### 8. Internet Access
-
-            - Use your WebSearch tools to search the internet.
-            - This is required to find documentation for libraries, latest package versions, etc.
-
-            ### 9. Import Rules
-
-            - For TypeScript, place all imports at the top of the file; never use async imports.
-
-            ### Project-specific Build Commands:
-
-            **front**: cd front && npm ci && npx tsc --noEmit && npm run lint && npm run format:check
-            **connectors**: cd connectors && npm install && npm run build && npm run lint && npm run format:check
-            **cli**: cd cli && npm ci && npx tsc && npm run lint
-            **core**: cd core && cargo check && cargo fmt --all -- --check
-            **extension**: cd extension && npm ci && npm run build && npm run lint
-            **sparkle**: cd sparkle && npm install && npm run build && npm run lint
-            **viz**: cd viz && npm install && npm run build && npm run check
-            **sdks/js**: Already pre-built; if changes made: cd sdks/js && npm run build && npm run lint
-
-            ### Important Rules:
-            - Install dependencies once per project when first needed (npm ci or npm install)
-            - For TypeScript projects, run `npx tsc --noEmit` before committing
-            - For Rust projects, run `cargo check` before committing
-            - SDK is pre-built; rebuild only if you modify it
-            - Never run servers or execute applications, only build/lint/typecheck
-            - Follow all CODING_RULES.md files in each project directory
-            - Let exceptions propagate, avoid defensive patterns
-            - Make minimal changes required
-            - Use normalizeError() instead of `err as Error`
+            
+            - Provide conversational responses with code analysis and recommendations
+            - Review code and suggest improvements, but do not make changes
+            - Follow all **CODING_RULES.md** files in each project directory when providing advice
+            - Recommend minimal changes when suggesting improvements
+            - Avoid suggesting "defensive" patterns (default values, removing tests, non-null assertions)
+            
+            ### 2. Code Analysis & Recommendations
+            
+            - When analyzing TypeScript code, reference `npx tsc --noEmit` for type checking
+            - When analyzing Rust code, reference `cargo check` for validation
+            - Provide specific file locations and line numbers when suggesting changes
+            - Explain the reasoning behind recommendations
+            
+            ### 3. Error Handling Guidance
+            
+            - Recommend letting exceptions propagate rather than catching unnecessarily
+            - Suggest using `Result<T, E>` only when downstream handling is required
+            - Recommend `try/catch` solely to convert external library errors
+            - Suggest using `normalizeError()` instead of `err as Error`
+            
+            ### 4. Internet Access
+            
+            - Use WebSearch tools to find documentation for libraries, latest package versions, etc.
+            - Reference official documentation when providing recommendations
+            
+            ### Project Structure Reference:
+            
+            **front**: TypeScript project - npm ci && npx tsc --noEmit && npm run lint
+            **connectors**: TypeScript project - npm install && npm run build && npm run lint
+            **cli**: TypeScript project - npm ci && npx tsc && npm run lint
+            **core**: Rust project - cargo check && cargo fmt --all -- --check
+            **extension**: TypeScript project - npm ci && npm run build && npm run lint
+            **sparkle**: TypeScript project - npm install && npm run build && npm run lint
+            **viz**: TypeScript project - npm install && npm run build && npm run check
+            **sdks/js**: Pre-built TypeScript SDK
+            
+            ### Response Guidelines:
+            
+            - Be helpful and provide actionable advice
+            - When asked to make changes, explain what should be changed and why
+            - Provide code examples in your responses when helpful
+            - Reference project coding standards when applicable
 
           # Environment variables for Claude
           claude_env: |
