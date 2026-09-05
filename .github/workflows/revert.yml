@@ -90,6 +90,9 @@ jobs:
 
       - name: Trigger dust-infra workflow
         uses: actions/github-script@v6
+        env:
+          IMAGE_TAG: ${{ inputs.image_tag }}
+          SLACK_THREAD_TS: ${{ needs.notify-start.outputs.thread_ts }}
         with:
           github-token: ${{ steps.generate-token.outputs.token }}
           script: |
@@ -100,8 +103,8 @@ jobs:
               client_payload: {
                 regions: '${{ inputs.region }}',
                 component: '${{ inputs.component }}',
-                image_tag: '${{ inputs.image_tag }}',
-                slack_thread_ts: "${{ needs.notify-start.outputs.thread_ts }}",
+                image_tag: process.env.IMAGE_TAG,
+                slack_thread_ts: process.env.SLACK_THREAD_TS,
                 slack_channel: '${{ secrets.SLACK_CHANNEL_ID }}',
                 run_playwright: false,
               }
