@@ -1,14 +1,12 @@
 name: Claude Code Review
 
 on:
-  pull_request:
+  pull_request_target:
     types: [labeled] # Runs when label is added
 
 permissions:
-  contents: write
   issues: write
   pull-requests: write
-  id-token: write
 
 jobs:
   code-review:
@@ -35,6 +33,7 @@ jobs:
         if: steps.should-run.outputs.result == 'true'
         uses: actions/checkout@v4
         with:
+          ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0 # Fetch full history for accurate diffs
 
       # Create symlink from CODING_RULES.md to CLAUDE.md
@@ -47,6 +46,8 @@ jobs:
       - name: Run Code Review with Claude
         if: steps.should-run.outputs.result == 'true'
         id: code-review
+        # SECURITY: Pin to a specific commit SHA instead of mutable @beta tag
+        # Example: uses: anthropics/claude-code-action@<commit-sha>
         uses: anthropics/claude-code-action@beta
         with:
           # Define the review focus areas
